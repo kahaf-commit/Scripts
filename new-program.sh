@@ -3,36 +3,84 @@
 set -Eeuo pipefail
 
 # ============================================================
-# Bug Bounty Program Workspace & Recon Script
+# Bug Bounty Workspace & Recon Script
+#
 # Usage:
 #   ./new-program.sh example.com
+#   ./new-program.sh 192.168.1.10
+#   ./new-program.sh varonis
 #
-# Example:
-#   ./new-program.sh varonis.com
+# Modes:
+#   DOMAIN -> Full reconnaissance
+#   IP     -> IP-based reconnaissance
+#   NAME   -> Workspace creation only
 # ============================================================
 
-PROGRAM="${1:-}"
+TARGET="${1:-}"
 
-if [[ -z "$PROGRAM" ]]; then
-    echo "Usage: $0 <target-domain>"
-    echo "Example: $0 example.com"
+if [[ -z "$TARGET" ]]; then
+    echo "Usage: $0 <domain|IP|workspace-name>"
+    echo
+    echo "Examples:"
+    echo "  $0 example.com"
+    echo "  $0 192.168.1.10"
+    echo "  $0 varonis"
     exit 1
 fi
 
-# Basic domain validation
-if [[ ! "$PROGRAM" =~ ^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$ ]]; then
-    echo "[!] Invalid domain: $PROGRAM"
-    exit 1
+# Remove trailing slash/dot
+TARGET="${TARGET%/}"
+TARGET="${TARGET%.}"
+
+# ============================================================
+# Detect Target Type
+# ============================================================
+
+is_ipv4() {
+    local ip="$1"
+    local IFS=.
+    local octets
+
+    read -ra octets <<< "$ip"
+
+    [[ ${#octets[@]} -eq 4 ]] || return 1
+
+    for octet in "${octets[@]}"; do
+        [[ "$octet" =~ ^[0-9]+$ ]] || return 1
+        (( octet >= 0 && octet <= 255 )) || return 1
+    done
+
+    return 0
+}
+
+is_domain() {
+    [[ "$1" =~ ^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$ ]]
+}
+
+if is_ipv4 "$TARGET"; then
+    TARGET_TYPE="IP"
+
+elif is_domain "$TARGET"; then
+    TARGET_TYPE="DOMAIN"
+
+else
+    TARGET_TYPE="NAME"
 fi
 
-# Remove trailing dot if supplied
-PROGRAM="${PROGRAM%.}"
+# ============================================================
+# Workspace
+# ============================================================
 
-BASE="$HOME/bugbounty/$PROGRAM"
+BASE="$HOME/bugbounty/$TARGET"
 
 echo
-echo "[*] Starting bug bounty workspace: $PROGRAM"
-echo "[*] Base directory: $BASE"
+echo "============================================================"
+echo " Bug Bounty Workspace"
+echo "============================================================"
+echo
+echo "[*] Target       : $TARGET"
+echo "[*] Target Type  : $TARGET_TYPE"
+echo "[*] Workspace    : $BASE"
 echo
 
 # ============================================================
@@ -58,83 +106,203 @@ for DIR in "${DIRS[@]}"; do
     mkdir -p "$DIR"
 done
 
-echo "[+] Directory structure created"
+echo "[+] Workspace structure created"
 
 # ============================================================
-# Metadata
+# README
 # ============================================================
 
 cat > "$BASE/README.md" <<EOF
-# Bug Bounty Workspace - $PROGRAM
+# Bug Bounty Workspace
 
+Target: $TARGET
+Type: $TARGET_TYPE
 Created: $(date)
-
-## Target
-
-$PROGRAM
 
 ## Scope
 
-Only test assets explicitly authorized by the bug bounty program.
+Verify the official program scope before performing active testing.
 
 ## Recon
 
 - Subdomains
 - DNS
-- HTTP services
+- HTTP
 - URLs
-- Screenshots
 - Ports
+- Screenshots
 
 ## Vulnerabilities
 
-Document confirmed findings here.
+Store confirmed findings here.
+
+## Reports
+
+Store final reports here.
 
 ## Notes
 
-Keep useful observations and manual testing notes here.
+Keep manual testing notes here.
 EOF
+
+# ============================================================
+# Scope File
+# ============================================================
 
 cat > "$BASE/notes/scope.txt" <<EOF
 ============================================================
-TARGET SCOPE
+TARGET / SCOPE
 ============================================================
 
-Program:
-$PROGRAM
+Target:
+$TARGET
 
-IMPORTANT:
-Review the official bug bounty program scope before testing.
+Target Type:
+$TARGET_TYPE
 
-In-scope:
-- Add authorized domains here
-- Add authorized subdomains here
-- Add authorized IP ranges here
+============================================================
+IMPORTANT
+============================================================
 
-Out-of-scope:
-- Add excluded assets here
-- Add third-party infrastructure here
+Only test assets explicitly authorized by the program.
+
+Add confirmed in-scope assets below.
+
+In-Scope:
+-
+
+Out-of-Scope:
+-
+
+Notes:
+-
 
 ============================================================
 EOF
 
 # ============================================================
-# Tool Check
+# NAME MODE
+#
+# Example:
+# ./new-program.sh varonis
+#
+# Only creates workspace.
 # ============================================================
 
-TOOLS=(
-    "curl"
-    "dig"
-)
+if [[ "$TARGET_TYPE" == "NAME" ]]; then
+
+    echo
+    echo "[*] Workspace-only mode"
+    echo "[*] No reconnaissance will be performed."
+    echo
+    echo "[+] Workspace ready:"
+    echo "    $BASE"
+    echo
+
+    exit 0
+fi
+
+# ============================================================
+# IP MODE
+#
+# Example:
+# ./new-program.sh 192.168.1.10
+#
+# No subdomain enumeration or crt.sh.
+# ============================================================
+
+if [[ "$TARGET_TYPE" == "IP" ]]; then
+
+    echo
+    echo "[*] IP reconnaissance mode"
+
+    printf '%s\n' "$TARGET" \
+        > "$BASE/recon/ports/targets.txt"
+
+    # --------------------------------------------------------
+    # HTTP Enumeration
+    # --------------------------------------------------------
+
+    if command -v httpx >/dev/null 2>&1; then
+
+        echo "[*] Checking HTTP services..."
+
+        printf '%s\n' "$TARGET" |
+            httpx \
+                -silent \
+                -status-code \
+                -title \
+                -tech-detect \
+                -follow-redirects \
+                -o "$BASE/recon/http/httpx.txt" || true
+
+        if [[ -f "$BASE/recon/http/httpx.txt" ]]; then
+            awk '{print $1}' "$BASE/recon/http/httpx.txt" |
+                sort -u \
+                > "$BASE/recon/http/live.txt"
+        fi
+
+    else
+        echo "[!] httpx not installed - skipping HTTP enumeration"
+    fi
+
+    # --------------------------------------------------------
+    # Nuclei
+    # --------------------------------------------------------
+
+    if command -v nuclei >/dev/null 2>&1 &&
+       [[ -s "$BASE/recon/http/live.txt" ]]; then
+
+        echo
+        echo "[*] Running rate-limited Nuclei scan..."
+        echo "[*] Verify authorization before active scanning."
+
+        nuclei \
+            -l "$BASE/recon/http/live.txt" \
+            -severity info,low,medium,high,critical \
+            -rate-limit 10 \
+            -concurrency 5 \
+            -o "$BASE/nuclei/results.txt" || true
+
+    else
+        echo "[!] Nuclei skipped"
+    fi
+
+    echo
+    echo "============================================================"
+    echo " IP RECON COMPLETE"
+    echo "============================================================"
+    echo
+    echo "Workspace : $BASE"
+    echo "HTTP      : $BASE/recon/http/"
+    echo "Nuclei    : $BASE/nuclei/"
+    echo
+
+    exit 0
+fi
+
+# ============================================================
+# DOMAIN MODE
+#
+# Example:
+# ./new-program.sh example.com
+# ============================================================
 
 echo
-echo "[*] Checking basic dependencies..."
+echo "[*] Domain reconnaissance mode"
 
-for TOOL in "${TOOLS[@]}"; do
+# ============================================================
+# Dependency Check
+# ============================================================
+
+echo
+echo "[*] Checking tools..."
+
+for TOOL in curl dig; do
     if command -v "$TOOL" >/dev/null 2>&1; then
         echo "[+] $TOOL"
     else
-        echo "[!] Missing: $TOOL"
+        echo "[!] $TOOL not installed"
     fi
 done
 
@@ -148,7 +316,7 @@ echo "[*] Starting passive subdomain enumeration..."
 if command -v subfinder >/dev/null 2>&1; then
 
     subfinder \
-        -d "$PROGRAM" \
+        -d "$TARGET" \
         -silent \
         -o "$BASE/recon/subdomains/subfinder.txt" || true
 
@@ -165,18 +333,21 @@ fi
 echo
 echo "[*] Collecting Certificate Transparency data..."
 
-curl -s \
-    "https://crt.sh/?q=%25.${PROGRAM}&output=json" \
-    2>/dev/null |
-    grep -oE '"name_value":"[^"]+"' |
-    sed 's/"name_value":"//g' |
-    sed 's/"//g' |
-    tr '\\n' '\n' |
-    sed 's/\*\.//g' |
-    sort -u \
-    > "$BASE/recon/subdomains/crtsh.txt" || true
+if command -v curl >/dev/null 2>&1; then
 
-echo "[+] Certificate data saved"
+    curl -s \
+        "https://crt.sh/?q=%25.${TARGET}&output=json" |
+        grep -oE '"name_value":"[^"]+"' |
+        sed 's/"name_value":"//g' |
+        sed 's/"//g' |
+        sed 's/\\n/\n/g' |
+        sed 's/\*\.//g' |
+        sort -u \
+        > "$BASE/recon/subdomains/crtsh.txt" || true
+
+    echo "[+] Certificate data saved"
+
+fi
 
 # ============================================================
 # Combine Subdomains
@@ -196,22 +367,26 @@ echo "[+] Unique subdomains: $(wc -l < "$BASE/recon/subdomains/all.txt")"
 # ============================================================
 
 echo
-echo "[*] Resolving discovered domains..."
+echo "[*] Resolving domains..."
 
-while IFS= read -r SUBDOMAIN; do
+if command -v dig >/dev/null 2>&1; then
 
-    [[ -z "$SUBDOMAIN" ]] && continue
+    while IFS= read -r SUBDOMAIN; do
 
-    IP=$(dig +short "$SUBDOMAIN" A 2>/dev/null | head -n 1 || true)
+        [[ -z "$SUBDOMAIN" ]] && continue
 
-    if [[ -n "$IP" ]]; then
-        printf "%-50s %s\n" "$SUBDOMAIN" "$IP"
-    fi
+        IP=$(dig +short "$SUBDOMAIN" A 2>/dev/null |
+             grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' |
+             head -n 1 || true)
 
-done < "$BASE/recon/subdomains/all.txt" \
-    > "$BASE/recon/dns/resolved.txt"
+        if [[ -n "$IP" ]]; then
+            printf "%-50s %s\n" "$SUBDOMAIN" "$IP"
+        fi
 
-echo "[+] DNS resolution completed"
+    done < "$BASE/recon/subdomains/all.txt" \
+        > "$BASE/recon/dns/resolved.txt"
+
+fi
 
 # ============================================================
 # HTTP Enumeration
@@ -231,19 +406,22 @@ if command -v httpx >/dev/null 2>&1; then
         -tech-detect \
         -o "$BASE/recon/http/httpx.txt" || true
 
-    # Extract only live URLs
-    awk '{print $1}' "$BASE/recon/http/httpx.txt" |
-        sort -u \
-        > "$BASE/recon/http/live.txt"
+    if [[ -f "$BASE/recon/http/httpx.txt" ]]; then
 
-    echo "[+] Live hosts: $(wc -l < "$BASE/recon/http/live.txt")"
+        awk '{print $1}' "$BASE/recon/http/httpx.txt" |
+            sort -u \
+            > "$BASE/recon/http/live.txt"
+
+    fi
+
+    echo "[+] HTTP enumeration completed"
 
 else
-    echo "[!] httpx not installed - skipping HTTP enumeration"
+    echo "[!] httpx not installed - skipping"
 fi
 
 # ============================================================
-# Passive URL Discovery
+# Historical URL Discovery
 # ============================================================
 
 echo
@@ -253,7 +431,7 @@ if command -v gau >/dev/null 2>&1; then
 
     gau \
         --subs \
-        "$PROGRAM" \
+        "$TARGET" \
         2>/dev/null |
         sort -u \
         > "$BASE/recon/urls/gau.txt" || true
@@ -264,15 +442,9 @@ else
     echo "[!] gau not installed - skipping"
 fi
 
-# ============================================================
-# Wayback URLs
-# ============================================================
-
 if command -v waybackurls >/dev/null 2>&1; then
 
-    echo "[*] Collecting Wayback URLs..."
-
-    printf '%s\n' "$PROGRAM" |
+    printf '%s\n' "$TARGET" |
         waybackurls |
         sort -u \
         > "$BASE/recon/urls/wayback.txt" || true
@@ -295,11 +467,8 @@ cat \
 echo "[+] Total URLs: $(wc -l < "$BASE/recon/urls/all.txt")"
 
 # ============================================================
-# Interesting URLs
+# Interesting Endpoints
 # ============================================================
-
-echo
-echo "[*] Extracting potentially interesting endpoints..."
 
 grep -Ei \
     '(\?|=|api|admin|login|auth|oauth|token|upload|redirect|callback|debug|graphql|swagger)' \
@@ -308,10 +477,10 @@ grep -Ei \
     sort -u \
     > "$BASE/recon/urls/interesting.txt" || true
 
-echo "[+] Interesting URLs saved"
+echo "[+] Interesting endpoints extracted"
 
 # ============================================================
-# Nuclei - Rate Limited
+# Nuclei
 # ============================================================
 
 if command -v nuclei >/dev/null 2>&1 &&
@@ -319,7 +488,6 @@ if command -v nuclei >/dev/null 2>&1 &&
 
     echo
     echo "[*] Running rate-limited Nuclei scan..."
-    echo "[*] Only scan assets confirmed to be in scope."
 
     nuclei \
         -l "$BASE/recon/http/live.txt" \
@@ -328,32 +496,29 @@ if command -v nuclei >/dev/null 2>&1 &&
         -concurrency 5 \
         -o "$BASE/nuclei/results.txt" || true
 
-    echo "[+] Nuclei scan completed"
+    echo "[+] Nuclei completed"
 
 else
-    echo
     echo "[!] Nuclei skipped"
 fi
 
 # ============================================================
-# Summary
+# Final Summary
 # ============================================================
 
 echo
 echo "============================================================"
-echo " BUG BOUNTY RECON COMPLETE"
+echo " DOMAIN RECON COMPLETE"
 echo "============================================================"
 echo
-echo "Program      : $PROGRAM"
-echo "Workspace    : $BASE"
+echo "Target      : $TARGET"
+echo "Workspace   : $BASE"
 echo
-echo "Subdomains   : $BASE/recon/subdomains/all.txt"
-echo "DNS Results  : $BASE/recon/dns/resolved.txt"
-echo "Live Hosts   : $BASE/recon/http/live.txt"
-echo "All URLs     : $BASE/recon/urls/all.txt"
-echo "Interesting  : $BASE/recon/urls/interesting.txt"
-echo "Nuclei       : $BASE/nuclei/results.txt"
+echo "Subdomains  : $BASE/recon/subdomains/all.txt"
+echo "DNS         : $BASE/recon/dns/resolved.txt"
+echo "Live Hosts  : $BASE/recon/http/live.txt"
+echo "URLs        : $BASE/recon/urls/all.txt"
+echo "Interesting : $BASE/recon/urls/interesting.txt"
+echo "Nuclei      : $BASE/nuclei/results.txt"
 echo
-echo "============================================================"
-echo "[+] Happy hunting — stay within program scope."
 echo "============================================================"
