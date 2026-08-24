@@ -1,5 +1,3 @@
-Based on the files shown, I’d make the README **clean, professional, and security-focused**, without making unsupported claims about what the executables do.
-
 # Security & Automation Scripts
 
 A collection of personal **cybersecurity, automation, reconnaissance, and utility scripts** developed for research, learning, testing, and authorized security assessments.
@@ -73,7 +71,7 @@ These scripts are intended for:
 
 ## Disclaimer
 
-The author is not responsible for misuse, damage, data loss, or unauthorized activity resulting from the use of these scripts.
+The author is not responsible for misuse, damage, data loss, or unauthorized activity resulting from using these scripts.
 
 Always test security tooling in a controlled environment before using it in a production or authorized assessment.
 
@@ -81,7 +79,7 @@ Always test security tooling in a controlled environment before using it in a pr
 
 **Muhammad Jubair**
 
-Cybersecurity Specialist | Penetration Tester
+`Cybersecurity Specialist` | `Penetration Tester`
 
 Focused on:
 
